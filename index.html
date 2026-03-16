@@ -318,10 +318,10 @@ const PROXY = 'https://corsproxy.io/?';
 const SPORTS = [
   {id:'calcio', label:'⚽ Calcio'},
   {id:'basket', label:'🏀 Basket'},
+  {id:'tennis', label:'🎾 Tennis'},
   {id:'nfl', label:'🏈 NFL'},
   {id:'nhl', label:'🏒 NHL'},
-  {id:'mlb', label:'⚾ MLB'},
-  {id:'racing', label:'🏎 Racing'}
+  {id:'mlb', label:'⚾ MLB'}
 ];
 
 const LEAGUES = {
@@ -334,14 +334,14 @@ const LEAGUES = {
     {id:'uefa.champions',label:'Champions League'},{id:'uefa.europa',label:'Europa League'}
   ],
   basket:[{id:'basketball/nba',label:'NBA'},{id:'basketball/wnba',label:'WNBA'}],
+  tennis:[{id:'tennis/atp',label:'ATP'},{id:'tennis/wta',label:'WTA'}],
   nfl:[{id:'football/nfl',label:'NFL'}],
   nhl:[{id:'hockey/nhl',label:'NHL'}],
-  mlb:[{id:'baseball/mlb',label:'MLB'}],
-  racing:[{id:'racing/f1',label:'Formula 1'}]
+  mlb:[{id:'baseball/mlb',label:'MLB'}]
 };
 
 const SPORT_PATH = {
-  calcio:'soccer', basket:'basketball', nfl:'football', nhl:'hockey', mlb:'baseball', racing:'racing'
+  calcio:'soccer', basket:'basketball', nfl:'football', nhl:'hockey', mlb:'baseball', tennis:'tennis'
 };
 
 const TABS = [
@@ -380,6 +380,96 @@ function getLeaguePath(leagueId) {
 function getSportFromLeague(leagueId) {
   if(leagueId.includes('/')) return leagueId.split('/')[0];
   return 'soccer';
+}
+
+function isTennis() { return currentSport === 'tennis'; }
+
+// Flatten tennis scoreboard groupings → array of competitions
+function getTennisCompetitions(data) {
+  const comps = [];
+  (data.events||[]).forEach(ev=>(ev.groupings||[]).forEach(g=>comps.push(...(g.competitions||[]))));
+  return comps;
+}
+
+// Tennis score string: "6-3, 7-5" from linescores
+function tennisScore(comp) {
+  const comps = comp.competitors||[];
+  if(comps.length<2) return '—';
+  const maxSets = Math.max(comps[0].linescores?.length||0, comps[1].linescores?.length||0);
+  if(!maxSets) return '—';
+  const sets = [];
+  for(let i=0;i<maxSets;i++) {
+    const s1 = comps[0].linescores?.[i]?.value??'';
+    const s2 = comps[1].linescores?.[i]?.value??'';
+    if(s1!==''||s2!=='') sets.push(`${s1}-${s2}`);
+  }
+  return sets.join('  ') || '—';
+}
+
+function renderTennisRow(comp, key) {
+  const comps = comp.competitors||[];
+  const p1 = comps[0]||{};
+  const p2 = comps[1]||{};
+  const isLive = comp.status?.type?.state === 'in';
+  const eid = esc(String(comp.id||key));
+  evMap[eid] = {_tennis:true, _comp:comp};
+  const name1 = p1.athlete?.displayName||'?';
+  const name2 = p2.athlete?.displayName||'?';
+  const flag1 = p1.athlete?.flag?.href||'';
+  const flag2 = p2.athlete?.flag?.href||'';
+  const score = tennisScore(comp);
+  const round = esc(comp.round?.displayName||'');
+  const court = esc(comp.venue?.court||comp.venue?.fullName||'');
+  const statusBadge = matchStatusBadge({status:comp.status, date:comp.startDate||comp.date});
+  return `<div class="match-row${isLive?' live':''}" onclick="openTennisModal('${eid}')">
+    <div class="match-teams" style="flex-direction:column;align-items:flex-start;gap:3px;min-width:0">
+      <span class="team-name" style="${p2.winner?'opacity:.45':''}">${flag1?`<img src="${safeUrl(flag1)}" style="width:16px;height:11px;object-fit:cover;border-radius:1px;margin-right:5px;vertical-align:middle" loading="lazy">`:''}<b style="${p1.winner?'color:var(--accent)':''}">${esc(name1)}</b></span>
+      <span class="team-name" style="${p1.winner?'opacity:.45':''}">${flag2?`<img src="${safeUrl(flag2)}" style="width:16px;height:11px;object-fit:cover;border-radius:1px;margin-right:5px;vertical-align:middle" loading="lazy">`:''}<b style="${p2.winner?'color:var(--accent)':''}">${esc(name2)}</b></span>
+    </div>
+    <div style="text-align:right;flex-shrink:0;min-width:110px">
+      <div style="font-family:var(--fm);font-size:12px;color:var(--text);letter-spacing:1px">${esc(score)}</div>
+      ${round?`<div style="font-size:10px;color:var(--muted);margin-top:2px">${round}${court?' — '+court:''}</div>`:''}
+    </div>
+    ${statusBadge}
+  </div>`;
+}
+
+function openTennisModal(eid) {
+  const ev = evMap[eid];
+  if(!ev||!ev._tennis) return;
+  const comp = ev._comp;
+  const comps = comp.competitors||[];
+  const p1 = comps[0]||{};
+  const p2 = comps[1]||{};
+  const score = tennisScore(comp);
+  const round = comp.round?.displayName||'';
+  const venue = comp.venue;
+  const flag1 = p1.athlete?.flag?.href||'';
+  const flag2 = p2.athlete?.flag?.href||'';
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-teams">
+      <div class="modal-team">
+        ${flag1?`<img src="${safeUrl(flag1)}" style="width:48px;height:32px;object-fit:cover;border-radius:3px" loading="lazy">`:''}
+        <div class="modal-team-name" style="${p1.winner?'color:var(--accent)':''}">${esc(p1.athlete?.displayName||'?')}</div>
+      </div>
+      <div>
+        <div style="font-family:var(--fd);font-size:18px;color:var(--accent);letter-spacing:2px;text-align:center;white-space:nowrap">${esc(score)}</div>
+        <div class="modal-status">${matchStatusBadge({status:comp.status,date:comp.startDate||comp.date})}</div>
+      </div>
+      <div class="modal-team">
+        ${flag2?`<img src="${safeUrl(flag2)}" style="width:48px;height:32px;object-fit:cover;border-radius:3px" loading="lazy">`:''}
+        <div class="modal-team-name" style="${p2.winner?'color:var(--accent)':''}">${esc(p2.athlete?.displayName||'?')}</div>
+      </div>
+    </div>
+    <div class="modal-info">
+      ${round?`<div class="modal-info-item"><label>Turno</label><span>${esc(round)}</span></div>`:''}
+      ${venue?.court?`<div class="modal-info-item"><label>Campo</label><span>${esc(venue.court)}</span></div>`:''}
+      ${venue?.fullName?`<div class="modal-info-item"><label>Location</label><span>${esc(venue.fullName)}</span></div>`:''}
+      <div class="modal-info-item"><label>Data</label><span>${comp.date?new Date(comp.date).toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'short'}):'N/D'}</span></div>
+    </div>`;
+  document.getElementById('modal-overlay').style.display='flex';
+  document.addEventListener('keydown', modalEscHandler);
 }
 
 async function fetchJSON(url) {
@@ -667,21 +757,51 @@ async function loadRisultati() {
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
-    const url = getApiUrl(`${lp}/scoreboard`);
-    const data = await fetchJSON(url);
+    const data = await fetchJSON(getApiUrl(`${lp}/scoreboard`));
+
+    if(isTennis()) {
+      const comps = getTennisCompetitions(data);
+      const liveCount = comps.filter(c=>c.status?.type?.state==='in').length;
+      document.getElementById('live-count').textContent = `${liveCount} LIVE`;
+      document.getElementById('hs-live').textContent = liveCount;
+      document.getElementById('hs-oggi').textContent = comps.length;
+      // ticker
+      const tickItems = comps.slice(0,20).map(c=>{
+        const ps=c.competitors||[];
+        return `${esc(ps[0]?.athlete?.shortName||'?')} vs ${esc(ps[1]?.athlete?.shortName||'?')}`;
+      });
+      if(tickItems.length) {
+        const txt=tickItems.join('  •  ');
+        document.getElementById('ticker-track').innerHTML=`<span class="ti">${txt}</span><span class="ti">${txt}</span>`;
+      }
+      // Group by round
+      const byRound = {};
+      comps.forEach(c=>{ const r=c.round?.displayName||'Partite'; (byRound[r]=byRound[r]||[]).push(c); });
+      let html = '';
+      if(liveCount>0) html += `<div id="refresh-bar-wrap">${renderRefreshBar()}</div>`;
+      if(!comps.length) {
+        html += `<div class="panel"><div class="empty"><div class="empty-icon">📭</div>Nessun match in corso</div></div>`;
+      } else {
+        Object.entries(byRound).forEach(([round, rComps])=>{
+          html += `<div class="panel"><div class="panel-hdr"><div class="panel-title">${esc(round)}</div><span style="font-size:12px;color:var(--muted)">${rComps.length} match</span></div>`;
+          html += rComps.map((c,i)=>renderTennisRow(c,i)).join('');
+          html += `</div>`;
+        });
+      }
+      setContent(html);
+      if(liveCount>0) { _refreshCb=loadRisultati; startAutoRefresh(loadRisultati); }
+      return;
+    }
+
     const events = data.events||[];
     const liveEvents = events.filter(e=>['STATUS_IN_PROGRESS','STATUS_HALFTIME'].includes(e.status?.type?.name));
     const liveCount = liveEvents.length;
     document.getElementById('live-count').textContent = `${liveCount} LIVE`;
     document.getElementById('hs-live').textContent = liveCount;
     document.getElementById('hs-oggi').textContent = events.length;
-
     updateTicker(events);
-
     let html = '';
-    if(liveCount>0) {
-      html += `<div id="refresh-bar-wrap">${renderRefreshBar()}</div>`;
-    }
+    if(liveCount>0) html += `<div id="refresh-bar-wrap">${renderRefreshBar()}</div>`;
     html += `<div class="panel">
       <div class="panel-hdr"><div class="panel-title">Risultati</div><span style="font-size:12px;color:var(--muted)">${events.length} partite</span></div>`;
     if(events.length===0) {
@@ -691,11 +811,7 @@ async function loadRisultati() {
     }
     html += `</div>`;
     setContent(html);
-
-    if(liveCount>0) {
-      _refreshCb = loadRisultati;
-      startAutoRefresh(loadRisultati);
-    }
+    if(liveCount>0) { _refreshCb=loadRisultati; startAutoRefresh(loadRisultati); }
   } catch(err) {
     setError('Impossibile caricare i risultati. ' + err.message);
   }
@@ -722,7 +838,6 @@ async function loadCalendario() {
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
-    // Fetch 7 days: today + 6
     const today = new Date();
     const promises = [];
     for(let i=0;i<7;i++) {
@@ -732,6 +847,27 @@ async function loadCalendario() {
       promises.push(fetchJSON(getApiUrl(`${lp}/scoreboard?dates=${ds}`)).catch(()=>({events:[]})));
     }
     const results = await Promise.all(promises);
+
+    if(isTennis()) {
+      let html = `<div class="panel"><div class="panel-hdr"><div class="panel-title">Calendario — prossimi 7 giorni</div></div>`;
+      let total = 0;
+      results.forEach((data,i)=>{
+        const comps = getTennisCompetitions(data);
+        total += comps.length;
+        if(!comps.length) return;
+        const d = new Date(today); d.setDate(today.getDate()+i);
+        const label = i===0?'Oggi — ':i===1?'Domani — ':'';
+        const dateStr = label + d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});
+        html += `<div class="date-grp"><div class="date-hdr">${esc(dateStr.toUpperCase())}</div>`;
+        html += comps.map((c,j)=>renderTennisRow(c,`c${i}_${j}`)).join('');
+        html += `</div>`;
+      });
+      if(!total) html += `<div class="empty"><div class="empty-icon">📭</div>Nessun match in programma</div>`;
+      html += `</div>`;
+      setContent(html);
+      return;
+    }
+
     let html = `<div class="panel">
       <div class="panel-hdr"><div class="panel-title">Calendario — prossimi 7 giorni</div></div>`;
     let total = 0;
@@ -747,9 +883,7 @@ async function loadCalendario() {
       html += events.map((e,j)=>renderMatchRow(e,`c${i}_${j}`)).join('');
       html += `</div>`;
     });
-    if(total===0) {
-      html += `<div class="empty"><div class="empty-icon">📭</div>Nessuna partita in programma</div>`;
-    }
+    if(total===0) html += `<div class="empty"><div class="empty-icon">📭</div>Nessuna partita in programma</div>`;
     html += `</div>`;
     setContent(html);
   } catch(err) {
@@ -762,6 +896,46 @@ async function loadClassifica() {
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
+
+    // Tennis uses a rankings endpoint instead of standings
+    if(isTennis()) {
+      const data = await fetchJSON(getApiUrl(`${lp}/rankings`));
+      const ranks = (data.rankings||[])[0]?.ranks||[];
+      const leagueLabel = (LEAGUES[currentSport]||[]).find(x=>x.id===currentLeague)?.label||currentLeague;
+      window._standingsData = {entries:[], league:leagueLabel, date:new Date().toISOString().slice(0,10)};
+      let html = `<div class="panel">
+        <div class="panel-hdr"><div class="panel-title">Ranking ${esc(leagueLabel)}</div></div>`;
+      if(!ranks.length) {
+        html += `<div class="empty"><div class="empty-icon">🎾</div>Ranking non disponibile</div>`;
+      } else {
+        html += `<div style="overflow-x:auto"><table class="standings-table"><thead><tr>
+          <th>#</th><th>Giocatore</th><th>Nazionalità</th><th>Punti</th><th>Trend</th>
+        </tr></thead><tbody>`;
+        ranks.slice(0,50).forEach((r,idx)=>{
+          const ath=r.athlete||{};
+          const flag=ath.flag?.href||'';
+          const country=ath.citizenship||ath.flag?.alt||'';
+          const rankClass=idx<4?'rank top':'rank';
+          const trend=r.trend==='+1'?'↑':r.trend==='-1'?'↓':r.trend==='-'?'—':esc(String(r.trend||''));
+          html += `<tr>
+            <td><span class="${rankClass}">${r.current||idx+1}</span></td>
+            <td><div style="display:flex;align-items:center;gap:8px">
+              ${flag?`<img src="${safeUrl(flag)}" style="width:20px;height:14px;object-fit:cover;border-radius:2px" loading="lazy" onerror="this.style.display='none'">`:''}
+              <span style="font-weight:600">${esc(ath.displayName||'?')}</span>
+            </div></td>
+            <td style="color:var(--muted)">${esc(country)}</td>
+            <td style="color:var(--accent);font-family:var(--fm)">${Number(r.points||0).toLocaleString('it-IT')}</td>
+            <td style="color:${trend==='↑'?'#47ff82':trend==='↓'?'var(--accent3)':'var(--muted)'}">${trend}</td>
+          </tr>`;
+        });
+        html += `</tbody></table></div>`;
+        document.getElementById('hs-squa').textContent = ranks.length;
+      }
+      html += `</div>`;
+      setContent(html);
+      return;
+    }
+
     // Use /apis/v2/ — the /site/v2/ endpoint returns empty for standings
     const data = await fetchJSON(`${BASE_V2}/${lp}/standings`);
 
@@ -862,6 +1036,37 @@ async function loadStatistiche(catIdx) {
     const lp = getLeaguePath(currentLeague);
     if(catIdx===undefined) catIdx=0;
 
+    // Tennis: show ranking as stats (top players by points)
+    if(isTennis()) {
+      const data = await fetchJSON(getApiUrl(`${lp}/rankings`));
+      const allRanks = data.rankings||[];
+      if(catIdx>=allRanks.length) catIdx=0;
+      allStatCats = allRanks.map(r=>({name:r.type||r.id, displayName:r.name||r.shortName}));
+      statCatIndex = catIdx;
+      const ranks = (allRanks[catIdx]?.ranks||[]).slice(0,20);
+      let html = `<div class="panel">
+        <div class="panel-hdr"><div class="panel-title">Statistiche — Top Giocatori</div></div>
+        ${allRanks.length>1?`<div class="stat-filter-bar">${allRanks.map((r,i)=>`<button class="sfbtn${i===catIdx?' on':''}" onclick="loadStatistiche(${i})">${esc(r.name||r.shortName)}</button>`).join('')}</div>`:''}`;
+      ranks.forEach((r,i)=>{
+        const ath=r.athlete||{};
+        const flag=ath.flag?.href||'';
+        const rankClass=i===0?'gold':i===1?'silver':i===2?'bronze':'';
+        html += `<div class="stat-row">
+          <div class="stat-rank ${rankClass}">${r.current||i+1}</div>
+          ${flag?`<img class="stat-logo" src="${safeUrl(flag)}" style="width:28px;height:19px;object-fit:cover;border-radius:2px" loading="lazy" onerror="this.style.display='none'">`:''}
+          <div class="stat-player">
+            <div class="stat-name">${esc(ath.displayName||'?')}</div>
+            <div class="stat-team">${esc(ath.citizenship||'')}</div>
+          </div>
+          <div class="stat-val">${Number(r.points||0).toLocaleString('it-IT')}</div>
+        </div>`;
+      });
+      if(!ranks.length) html += `<div class="empty"><div class="empty-icon">🎾</div>Nessun dato disponibile</div>`;
+      html += `</div>`;
+      setContent(html);
+      return;
+    }
+
     // Try /leaders first; ESPN often returns 404 for this endpoint — fall back to standings stats
     let usedLeaders = false;
     let cats = [];
@@ -959,6 +1164,10 @@ async function loadStatistiche(catIdx) {
 
 // ===== SQUADRE =====
 async function loadSquadre() {
+  if(isTennis()) {
+    setContent(`<div class="panel"><div class="empty"><div class="empty-icon">🎾</div>Per il tennis usa la tab <b>Classifica</b> per vedere il ranking giocatori</div></div>`);
+    return;
+  }
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
@@ -1083,6 +1292,10 @@ function goBackToTeams() {
 
 // ===== HEAD-TO-HEAD =====
 function loadH2H() {
+  if(isTennis()) {
+    setContent(`<div class="panel"><div class="empty"><div class="empty-icon">⚔️</div>Head-to-Head non disponibile per il tennis tramite ESPN API</div></div>`);
+    return;
+  }
   setContent(`<div class="panel">
     <div class="panel-hdr"><div class="panel-title">Head-to-Head</div></div>
     <div class="h2h-search">
