@@ -558,7 +558,7 @@ function buildLeagueBar() {
 function selectSport(id) {
   currentSport = id;
   currentLeague = (LEAGUES[id]||[])[0]?.id || '';
-  C = {};
+  C = {}; calOffset = 0;
   clearRefresh();
   buildSportBar();
   buildLeagueBar();
@@ -568,7 +568,7 @@ function selectSport(id) {
 
 function selectLeague(id) {
   currentLeague = id;
-  C = {};
+  C = {}; calOffset = 0;
   clearRefresh();
   buildLeagueBar();
   updateLeagueHero();
@@ -699,7 +699,7 @@ function renderMatchRow(e, i) {
 }
 
 // ===== MODAL =====
-function openMatchModal(eid) {
+async function openMatchModal(eid) {
   const e = evMap[eid];
   if(!e) return;
   const comp = e.competitions?.[0];
@@ -708,10 +708,10 @@ function openMatchModal(eid) {
   const away = comps.find(c=>c.homeAway==='away')||comps[1]||{};
   const venue = comp?.venue;
   const att = comp?.attendance;
-  const isLive = ['STATUS_IN_PROGRESS','STATUS_HALFTIME'].includes(e.status?.type?.name);
 
   const body = document.getElementById('modal-body');
-  body.innerHTML = `
+  // Show basic info first, then enrich with summary
+  const renderBase = (eventsHtml='') => `
     <div class="modal-teams">
       <div class="modal-team">
         <img class="modal-team-logo" src="${safeUrl(home.team?.logo||'')}" alt="${esc(home.team?.displayName||'')}" loading="lazy" onerror="this.style.display='none'">
@@ -726,17 +726,47 @@ function openMatchModal(eid) {
         <div class="modal-team-name">${esc(away.team?.displayName||away.team?.name||'?')}</div>
       </div>
     </div>
+    ${eventsHtml}
     <div class="modal-info">
-      <div class="modal-info-item"><label>Stadio</label><span>${esc(venue?.fullName||'N/D')}</span></div>
-      <div class="modal-info-item"><label>Città</label><span>${esc(venue?.address?.city||'N/D')}</span></div>
+      ${venue?.fullName?`<div class="modal-info-item"><label>Stadio</label><span>${esc(venue.fullName)}</span></div>`:''}
+      ${venue?.address?.city?`<div class="modal-info-item"><label>Città</label><span>${esc(venue.address.city)}</span></div>`:''}
       ${att?`<div class="modal-info-item"><label>Spettatori</label><span>${Number(att).toLocaleString('it-IT')}</span></div>`:''}
-      <div class="modal-info-item"><label>Data</label><span>${e.date?new Date(e.date).toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'short'}):'N/D'}</span></div>
+      <div class="modal-info-item"><label>Data</label><span>${e.date?new Date(e.date).toLocaleDateString('it-IT',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'N/D'}</span></div>
       ${e.name?`<div class="modal-info-item" style="grid-column:1/-1"><label>Partita</label><span>${esc(e.name)}</span></div>`:''}
     </div>`;
 
-  const ov = document.getElementById('modal-overlay');
-  ov.style.display='flex';
+  body.innerHTML = renderBase('<div style="padding:10px 20px;text-align:center;color:var(--muted);font-size:12px">Caricamento eventi...</div>');
+  document.getElementById('modal-overlay').style.display='flex';
   document.addEventListener('keydown', modalEscHandler);
+
+  // Fetch summary for goals/events
+  try {
+    const lp = getLeaguePath(currentLeague);
+    const summary = await fetchJSON(getApiUrl(`${lp}/summary?event=${e.id}`));
+    const details = summary.header?.competitions?.[0]?.details||[];
+    const homeId = home.team?.id;
+    if(details.length) {
+      const goalTypes = new Set(['goal','yellowcard','redcard','penalty','owngoal']);
+      const notable = details.filter(d=>d.scoringPlay||d.type?.id);
+      let evHtml = `<div style="padding:10px 18px;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">`;
+      notable.forEach(d=>{
+        const min = d.clock?.displayValue||'';
+        const player = d.participants?.[0]?.athlete?.shortName||d.participants?.[0]?.athlete?.displayName||'';
+        const isHome = d.team?.id===homeId;
+        const icon = d.scoringPlay ? '⚽' : '📋';
+        evHtml += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
+          ${isHome?`<span style="flex:1;text-align:right">${esc(player)}</span><span style="font-family:var(--fm);color:var(--accent);min-width:36px;text-align:center">${esc(min)}</span><span style="flex:1">${icon}</span>`:
+                   `<span style="flex:1"></span><span style="font-family:var(--fm);color:var(--accent);min-width:36px;text-align:center">${esc(min)}</span><span style="flex:1">${icon} ${esc(player)}</span>`}
+        </div>`;
+      });
+      evHtml += `</div>`;
+      body.innerHTML = renderBase(notable.length ? evHtml : '');
+    } else {
+      body.innerHTML = renderBase('');
+    }
+  } catch(err) {
+    body.innerHTML = renderBase('');
+  }
 }
 
 function closeModal() {
@@ -834,29 +864,41 @@ function updateTicker(events) {
 }
 
 // ===== CALENDARIO =====
-async function loadCalendario() {
+let calOffset = 0; // days offset from today
+
+async function loadCalendario(offset) {
+  if(offset !== undefined) calOffset = offset;
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
-    const today = new Date();
+    const base = new Date();
+    base.setDate(base.getDate() + calOffset);
     const promises = [];
     for(let i=0;i<7;i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate()+i);
+      const d = new Date(base);
+      d.setDate(base.getDate()+i);
       const ds = d.toISOString().slice(0,10).replace(/-/g,'');
       promises.push(fetchJSON(getApiUrl(`${lp}/scoreboard?dates=${ds}`)).catch(()=>({events:[]})));
     }
     const results = await Promise.all(promises);
 
+    const navBar = `<div style="display:flex;align-items:center;gap:8px">
+      ${calOffset>0?`<button class="btn-outline" onclick="loadCalendario(0)" style="padding:4px 10px;font-size:11px">↩ Oggi</button>`:''}
+      <button class="btn-outline" onclick="loadCalendario(${calOffset-7})" style="padding:4px 10px;font-size:11px">◀ Prec</button>
+      <button class="btn-outline" onclick="loadCalendario(${calOffset+7})" style="padding:4px 10px;font-size:11px">Succ ▶</button>
+    </div>`;
+
     if(isTennis()) {
-      let html = `<div class="panel"><div class="panel-hdr"><div class="panel-title">Calendario — prossimi 7 giorni</div></div>`;
+      let html = `<div class="panel"><div class="panel-hdr"><div class="panel-title">Calendario</div>${navBar}</div>`;
       let total = 0;
       results.forEach((data,i)=>{
         const comps = getTennisCompetitions(data);
         total += comps.length;
         if(!comps.length) return;
-        const d = new Date(today); d.setDate(today.getDate()+i);
-        const label = i===0?'Oggi — ':i===1?'Domani — ':'';
+        const d = new Date(base); d.setDate(base.getDate()+i);
+        const isToday = d.toDateString()===new Date().toDateString();
+        const isTomorrow = d.toDateString()===new Date(Date.now()+86400000).toDateString();
+        const label = isToday?'Oggi — ':isTomorrow?'Domani — ':'';
         const dateStr = label + d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});
         html += `<div class="date-grp"><div class="date-hdr">${esc(dateStr.toUpperCase())}</div>`;
         html += comps.map((c,j)=>renderTennisRow(c,`c${i}_${j}`)).join('');
@@ -869,15 +911,17 @@ async function loadCalendario() {
     }
 
     let html = `<div class="panel">
-      <div class="panel-hdr"><div class="panel-title">Calendario — prossimi 7 giorni</div></div>`;
+      <div class="panel-hdr"><div class="panel-title">Calendario</div>${navBar}</div>`;
     let total = 0;
     results.forEach((data,i)=>{
       const events = data.events||[];
       total += events.length;
       if(events.length===0) return;
-      const d = new Date(today);
-      d.setDate(today.getDate()+i);
-      const label = i===0 ? 'Oggi — ' : i===1 ? 'Domani — ' : '';
+      const d = new Date(base);
+      d.setDate(base.getDate()+i);
+      const isToday = d.toDateString()===new Date().toDateString();
+      const isTomorrow = d.toDateString()===new Date(Date.now()+86400000).toDateString();
+      const label = isToday?'Oggi — ':isTomorrow?'Domani — ':'';
       const dateStr = label + d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});
       html += `<div class="date-grp"><div class="date-hdr">${esc(dateStr.toUpperCase())}</div>`;
       html += events.map((e,j)=>renderMatchRow(e,`c${i}_${j}`)).join('');
@@ -972,12 +1016,22 @@ async function loadClassifica() {
           <th>#</th><th>Squadra</th>
           ${cols.map(c=>`<th>${esc(c)}</th>`).join('')}
         </tr></thead><tbody>`;
+      // Build zone legend from notes
+      const zones = {};
+      entries.forEach(en=>{ const n=en.note; if(n?.description&&n?.color) zones[n.description]=n.color; });
+      const zoneLegend = Object.entries(zones).map(([desc,color])=>
+        `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted)"><span style="width:8px;height:8px;border-radius:50%;background:#${safeColor(color)};flex-shrink:0"></span>${esc(desc)}</span>`
+      ).join('  ');
+
       entries.forEach((en,idx)=>{
         const teamName = en.team?.displayName||en.team?.name||'';
         const logo = en.team?.logos?.[0]?.href||en.team?.logo||'';
+        const note = en.note;
+        const zoneColor = note?.color ? `border-left:3px solid #${safeColor(note.color)}` : '';
         const rankClass = idx<4?'rank top':'rank';
-        t += `<tr>
-          <td><span class="${rankClass}">${idx+1}</span></td>
+        const noteTitle = note?.description ? ` title="${esc(note.description)}"` : '';
+        t += `<tr style="${zoneColor}">
+          <td><span class="${rankClass}"${noteTitle}>${idx+1}</span></td>
           <td><div style="display:flex;align-items:center;gap:8px">
             ${logo?`<img src="${safeUrl(logo)}" style="width:18px;height:18px;object-fit:contain" loading="lazy" onerror="this.style.display='none'">`:''}
             <span style="font-weight:600">${esc(teamName)}</span>
@@ -986,6 +1040,7 @@ async function loadClassifica() {
         </tr>`;
       });
       t += `</tbody></table></div>`;
+      if(zoneLegend) t += `<div style="padding:8px 18px 12px;display:flex;gap:14px;flex-wrap:wrap">${zoneLegend}</div>`;
       return t;
     };
 
@@ -1236,7 +1291,7 @@ async function loadTeamDetail(tid) {
     let results = [];
     try {
       const rd = await fetchJSON(getApiUrl(`${lp}/teams/${tid}/schedule?limit=10`));
-      results = (rd.events||[]).filter(e=>e.status?.type?.completed).slice(-6).reverse();
+      results = (rd.events||[]).filter(e=>e.competitions?.[0]?.status?.type?.completed||e.competitions?.[0]?.status?.type?.state==='post').slice(-6).reverse();
     } catch(e2){}
 
     let formHtml = '';
@@ -1355,7 +1410,7 @@ async function runH2H() {
     const h2hMatches = eventsA.filter(ev=>{
       const comps = ev.competitions?.[0]?.competitors||[];
       return comps.some(c=>c.team?.id===teamA.id) && comps.some(c=>c.team?.id===teamB.id);
-    }).filter(ev=>ev.status?.type?.completed);
+    }).filter(ev=>ev.competitions?.[0]?.status?.type?.completed||ev.competitions?.[0]?.status?.type?.state==='post'||ev.status?.type?.completed||ev.status?.type?.state==='post');
 
     // Calculate stats
     let goalsA=0, goalsB=0, winsA=0, winsB=0, draws=0;
@@ -1394,11 +1449,15 @@ async function loadNotizie() {
   try {
     const lp = getLeaguePath(currentLeague);
     const sportPath = getSportFromLeague(currentLeague);
-    let data;
-    try {
-      data = await fetchJSON(getApiUrl(`${lp}/news?limit=20`));
-    } catch(e) {
-      data = await fetchJSON(getApiUrl(`${sportPath}/news?limit=20`));
+    // Build fallback chain: league-level → league root → sport root
+    const newsUrls = [
+      getApiUrl(`${lp}/news?limit=20`),
+      getApiUrl(`${sportPath}/${lp.includes('/')?lp.split('/')[1]:lp}/news?limit=20`),
+      getApiUrl(`${sportPath}/news?limit=20`)
+    ];
+    let data = {articles:[]};
+    for(const url of newsUrls) {
+      try { data = await fetchJSON(url); if(data.articles?.length) break; } catch(e){}
     }
     const articles = data.articles||[];
 
