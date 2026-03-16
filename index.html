@@ -802,7 +802,7 @@ async function loadClassifica() {
             ${logo?`<img src="${safeUrl(logo)}" style="width:18px;height:18px;object-fit:contain" loading="lazy" onerror="this.style.display='none'">`:''}
             <span style="font-weight:600">${esc(teamName)}</span>
           </div></td>
-          ${(en.stats||[]).map(s=>`<td>${esc(String(s.displayValue||s.value??''))}</td>`).join('')}
+          ${(en.stats||[]).map(s=>`<td>${esc(String(s.displayValue||(s.value??'')))}</td>`).join('')}
         </tr>`;
       });
       t += `</tbody></table></div>`;
@@ -839,7 +839,7 @@ function exportStandings() {
   let csv = '#,Squadra,' + cols.join(',') + '\n';
   entries.forEach((en,i)=>{
     const name = (en.team?.displayName||en.team?.name||'').replace(/,/g,' ');
-    const stats = (en.stats||[]).map(s=>(s.displayValue||s.value??'').toString().replace(/,/g,'')).join(',');
+    const stats = (en.stats||[]).map(s=>((s.displayValue||(s.value??'')).toString()).replace(/,/g,'')).join(',');
     csv += `${i+1},${name},${stats}\n`;
   });
   const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
@@ -887,7 +887,7 @@ async function loadStatistiche(catIdx) {
             <div class="stat-name">${esc(ath.displayName||ath.fullName||'?')}</div>
             <div class="stat-team">${esc(team.displayName||team.name||'')}</div>
           </div>
-          <div class="stat-val">${esc(String(l.displayValue||l.value??''))}</div>
+          <div class="stat-val">${esc(String(l.displayValue||(l.value??'')))}</div>
         </div>`;
       });
       if(top.length===0) html += `<div class="empty"><div class="empty-icon">⚡</div>Nessun dato disponibile</div>`;
