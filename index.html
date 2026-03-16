@@ -312,6 +312,7 @@ const safeColor = c => '#' + String(c||'').replace(/[^0-9a-fA-F]/g,'').slice(0,6
 
 // ===== CONSTANTS =====
 const BASE = 'https://site.api.espn.com/apis/site/v2/sports';
+const BASE_V2 = 'https://site.api.espn.com/apis/v2/sports';
 const PROXY = 'https://corsproxy.io/?';
 
 const SPORTS = [
@@ -761,8 +762,8 @@ async function loadClassifica() {
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
-    const data = await fetchJSON(getApiUrl(`${lp}/standings`));
-    const groups = data.standings?.entries ? [data.standings] : (data.children||[]);
+    // Use /apis/v2/ — the /site/v2/ endpoint returns empty for standings
+    const data = await fetchJSON(`${BASE_V2}/${lp}/standings`);
 
     const leagues = LEAGUES[currentSport]||[];
     const leagueLabel = (leagues.find(x=>x.id===currentLeague)||{}).label||currentLeague;
@@ -776,9 +777,14 @@ async function loadClassifica() {
 
     let tableData = [];
 
-    if(groups.length===0 && data.standings?.entries) {
-      groups.push(data.standings);
-    }
+    // Recursively collect all nodes that have standings.entries (handles conferences/divisions)
+    const extractGroups = (node, acc=[]) => {
+      const entries = node.standings?.entries;
+      if(entries?.length) acc.push({name: node.name||node.abbreviation||'', entries});
+      (node.children||[]).forEach(c => extractGroups(c, acc));
+      return acc;
+    };
+    const groups = extractGroups(data);
 
     const renderGroup = (grp) => {
       const entries = grp.entries||[];
@@ -786,7 +792,7 @@ async function loadClassifica() {
       if(entries[0]?.stats) {
         cols = entries[0].stats.map(s=>s.shortDisplayName||s.name||'');
       }
-      tableData = entries;
+      tableData = [...tableData, ...entries];
       let t = `<div style="overflow-x:auto"><table class="standings-table">
         <thead><tr>
           <th>#</th><th>Squadra</th>
@@ -814,9 +820,6 @@ async function loadClassifica() {
         if(grp.name) html += `<div style="padding:8px 18px;font-size:11px;color:var(--muted2);font-weight:600;text-transform:uppercase;letter-spacing:.5px">${esc(grp.name)}</div>`;
         html += renderGroup(grp);
       });
-    } else if(data.entries) {
-      tableData = data.entries;
-      html += renderGroup({entries:data.entries});
     } else {
       html += `<div class="empty"><div class="empty-icon">📊</div>Classifica non disponibile</div>`;
     }
@@ -857,25 +860,28 @@ async function loadStatistiche(catIdx) {
   setLoader();
   try {
     const lp = getLeaguePath(currentLeague);
-    const data = await fetchJSON(getApiUrl(`${lp}/leaders`));
-    const cats = data.categories||[];
     if(catIdx===undefined) catIdx=0;
-    allStatCats = cats;
-    statCatIndex = catIdx;
 
-    let html = `<div class="panel">
-      <div class="panel-hdr"><div class="panel-title">Statistiche Giocatori</div></div>
-      <div class="stat-filter-bar">
-        ${cats.map((c,i)=>`<button class="sfbtn${i===catIdx?' on':''}" onclick="loadStatistiche(${i})">${esc(c.displayName||c.name||'Cat '+(i+1))}</button>`).join('')}
-      </div>`;
+    // Try /leaders first; ESPN often returns 404 for this endpoint — fall back to standings stats
+    let usedLeaders = false;
+    let cats = [];
+    try {
+      const ld = await fetchJSON(getApiUrl(`${lp}/leaders`));
+      cats = ld.categories||[];
+      if(cats.length) usedLeaders = true;
+    } catch(e) {}
 
-    if(cats.length===0) {
-      html += `<div class="empty"><div class="empty-icon">⚡</div>Statistiche non disponibili</div>`;
-    } else {
+    if(usedLeaders) {
+      allStatCats = cats;
+      statCatIndex = catIdx;
       const cat = cats[catIdx];
-      const leaders = cat.leaders||[];
-      const top = leaders.slice(0,10);
-      top.forEach((l,i)=>{
+      const leaders = (cat?.leaders||[]).slice(0,10);
+      let html = `<div class="panel">
+        <div class="panel-hdr"><div class="panel-title">Statistiche Giocatori</div></div>
+        <div class="stat-filter-bar">
+          ${cats.map((c,i)=>`<button class="sfbtn${i===catIdx?' on':''}" onclick="loadStatistiche(${i})">${esc(c.displayName||c.name||'Cat '+(i+1))}</button>`).join('')}
+        </div>`;
+      leaders.forEach((l,i)=>{
         const ath = l.athlete||{};
         const team = l.team||ath.team||{};
         const logo = team.logos?.[0]?.href||team.logo||'';
@@ -890,8 +896,60 @@ async function loadStatistiche(catIdx) {
           <div class="stat-val">${esc(String(l.displayValue||(l.value??'')))}</div>
         </div>`;
       });
-      if(top.length===0) html += `<div class="empty"><div class="empty-icon">⚡</div>Nessun dato disponibile</div>`;
+      if(!leaders.length) html += `<div class="empty"><div class="empty-icon">⚡</div>Nessun dato disponibile</div>`;
+      html += `</div>`;
+      setContent(html);
+      return;
     }
+
+    // Fallback: derive team stats from standings (works for all sports)
+    const standData = await fetchJSON(`${BASE_V2}/${lp}/standings`);
+    const extractEntries = (node) => {
+      const e = node.standings?.entries;
+      if(e?.length) return e;
+      for(const c of (node.children||[])) { const r=extractEntries(c); if(r.length) return r; }
+      return [];
+    };
+    const entries = extractEntries(standData);
+    if(!entries.length) { setError('Statistiche non disponibili per questa lega.'); return; }
+
+    // Build categories from the stat names in the first entry
+    const statDefs = entries[0]?.stats||[];
+    // Pick meaningful stats: exclude purely display stats
+    const skipTypes = new Set(['pointdifferential','rankchange','playoffseed']);
+    const usableStat = statDefs.filter(s=>!skipTypes.has(s.type)&&s.value!==undefined);
+    if(catIdx>=usableStat.length) catIdx=0;
+    allStatCats = usableStat.map(s=>({name:s.name, displayName:s.displayName||s.shortDisplayName}));
+    statCatIndex = catIdx;
+    const activeStat = usableStat[catIdx];
+
+    // Sort entries by chosen stat descending
+    const sorted = [...entries].sort((a,b)=>{
+      const sv = (en) => { const s=en.stats?.find(x=>x.name===activeStat.name); return Number(s?.value??-Infinity); };
+      return sv(b)-sv(a);
+    });
+
+    let html = `<div class="panel">
+      <div class="panel-hdr"><div class="panel-title">Statistiche Squadre</div></div>
+      <div class="stat-filter-bar">
+        ${usableStat.map((s,i)=>`<button class="sfbtn${i===catIdx?' on':''}" onclick="loadStatistiche(${i})">${esc(s.shortDisplayName||s.displayName||s.name)}</button>`).join('')}
+      </div>`;
+    sorted.slice(0,15).forEach((en,i)=>{
+      const team = en.team||{};
+      const logo = team.logos?.[0]?.href||team.logo||'';
+      const statObj = en.stats?.find(s=>s.name===activeStat.name);
+      const val = statObj?.displayValue??String(statObj?.value??'—');
+      const rankClass = i===0?'gold':i===1?'silver':i===2?'bronze':'';
+      html += `<div class="stat-row">
+        <div class="stat-rank ${rankClass}">${i+1}</div>
+        ${logo?`<img class="stat-logo" src="${safeUrl(logo)}" loading="lazy" onerror="this.style.display='none'">`:''}
+        <div class="stat-player">
+          <div class="stat-name">${esc(team.displayName||team.name||'?')}</div>
+          <div class="stat-team">${esc(activeStat.displayName||activeStat.name)}</div>
+        </div>
+        <div class="stat-val">${esc(val)}</div>
+      </div>`;
+    });
     html += `</div>`;
     setContent(html);
   } catch(err) {
@@ -1048,6 +1106,17 @@ async function runH2H() {
   if(res) res.innerHTML=`<div class="loader"><div class="spin"></div>Ricerca in corso...</div>`;
 
   try {
+    // Auto-load teams if not yet loaded
+    if(!teamsData.length) {
+      const lp = getLeaguePath(currentLeague);
+      const td = await fetchJSON(getApiUrl(`${lp}/teams?limit=100`));
+      const sports = td.sports||[];
+      let teams = [];
+      sports.forEach(sp=>(sp.leagues||[]).forEach(l=>(l.teams||[]).forEach(t=>{if(t.team)teams.push(t.team)})));
+      if(!teams.length) teams = (td.teams||[]).map(t=>t.team||t);
+      teamsData = teams;
+    }
+
     // Find team IDs from teamsData or use directly
     const findTeam = (q) => {
       const ql = q.toLowerCase();
